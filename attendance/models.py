@@ -1,73 +1,53 @@
+import uuid
 from django.db import models
-from django.contrib.auth import get_user_model
+from geopy.distance import geodesic
+from accounts.models import User
+from django.utils import timezone
 from courses.models import Course
-
-User = get_user_model()
 
 
 class AttendanceSession(models.Model):
-    STATUS_CHOICES = (
-        ('PENDING', 'Pending'),
-        ('ACTIVE', 'Active'),
-        ('COMPLETED', 'Completed'),
-        ('CANCELLED', 'Cancelled'),
-    )
+    course = models.ForeignKey(Course, on_delete=models.CASCADE)
+    qr_code = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
 
-    course = models.ForeignKey(
-        Course,
-        on_delete=models.CASCADE,
-        related_name='attendance_sessions'
-    )
-    lecturer = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='conducted_sessions'  # Changed from courses_taught
-    )
-    qr_code = models.CharField(max_length=100)
-    start_time = models.DateTimeField()
+    start_time = models.DateTimeField(auto_now_add=True)
     end_time = models.DateTimeField(null=True, blank=True)
-    status = models.CharField(
-        max_length=20,
-        choices=STATUS_CHOICES,
-        default='PENDING'
-    )
 
-    class Meta:
-        ordering = ['-start_time']
+    is_geofencing_enabled = models.BooleanField(default=False)
+    allowed_latitude = models.FloatField(null=True, blank=True)
+    allowed_longitude = models.FloatField(null=True, blank=True)
+    geofence_radius = models.FloatField(default=50)  # meters
 
-    def __str__(self):
-        return f"{self.course} - {self.start_time.strftime('%Y-%m-%d %H:%M')}"
+    is_active = models.BooleanField(default=True)
+
+    def terminate_session(self):
+        self.is_active = False
+        self.end_time = timezone.now()
+        self.save()
+
+    def is_valid_location(self, latitude, longitude):
+        if not self.is_geofencing_enabled:
+            return True
+
+        campus_location = (self.allowed_latitude, self.allowed_longitude)
+        student_location = (latitude, longitude)
+
+        distance = geodesic(campus_location, student_location).meters
+        return distance <= self.geofence_radius
 
 
 class Attendance(models.Model):
-    STATUS_CHOICES = (
-        ('PRESENT', 'Present'),
-        ('LATE', 'Late'),
-        ('ABSENT', 'Absent'),
-        ('EXCUSED', 'Excused'),
-    )
-
-    session = models.ForeignKey(
-        AttendanceSession,
-        on_delete=models.CASCADE,
-        related_name='attendances'
-    )
-    student = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='attendance_records'
-    )
-    timestamp = models.DateTimeField(auto_now_add=True)
-    location_data = models.JSONField()
+    student = models.ForeignKey(User, on_delete=models.CASCADE)
+    session = models.ForeignKey(AttendanceSession, on_delete=models.CASCADE)
+    check_in_time = models.DateTimeField(auto_now_add=True)
+    latitude = models.FloatField(null=True, blank=True)
+    longitude = models.FloatField(null=True, blank=True)
     status = models.CharField(
         max_length=20,
-        choices=STATUS_CHOICES,
-        default='PRESENT'
+        choices=[
+            ('present', 'Present'),
+            ('late', 'Late'),
+            ('absent', 'Absent')
+        ],
+        default='present'
     )
-
-    class Meta:
-        ordering = ['-timestamp']
-        unique_together = ['session', 'student']
-
-    def __str__(self):
-        return f"{self.student} - {self.session} - {self.status}"
